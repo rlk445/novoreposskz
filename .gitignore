@@ -1,0 +1,8 @@
+Metulas.xcodeproj
+Metulas.xcworkspace
+Pods/
+build/
+Payload/
+*.ipa
+Resources/hand_landmarker.task
+Config/Info.plist

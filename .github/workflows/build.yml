@@ -1,0 +1,50 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Baixar modelo de mãos do MediaPipe
+        run: |
+          curl -L --fail -o Resources/hand_landmarker.task \
+            https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+          ls -la Resources/hand_landmarker.task
+
+      - name: Instalar XcodeGen
+        run: brew install xcodegen
+
+      - name: Gerar projeto Xcode
+        run: xcodegen generate
+
+      - name: Instalar pods
+        run: pod install
+
+      - name: Compilar (sem assinatura)
+        run: |
+          xcodebuild \
+            -workspace Metulas.xcworkspace \
+            -scheme Metulas \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/Metulas.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive
+
+      - name: Empacotar IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Metulas.xcarchive/Products/Applications/Metulas.app Payload/
+          zip -qry Metulas.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Metulas-ipa
+          path: Metulas.ipa

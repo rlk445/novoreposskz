@@ -1,0 +1,17 @@
+platform :ios, '15.0'
+project 'Metulas.xcodeproj'
+
+target 'Metulas' do
+  use_frameworks!
+  pod 'MediaPipeTasksVision'
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |t|
+    t.build_configurations.each do |c|
+      c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+      c.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+      c.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+    end
+  end
+end

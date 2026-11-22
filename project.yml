@@ -1,0 +1,42 @@
+name: Metulas
+options:
+  bundleIdPrefix: com.metulas
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    ENABLE_BITCODE: NO
+targets:
+  Metulas:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources/desert
+        type: folder
+        buildPhase: resources
+      - path: Resources/sfx
+        type: folder
+        buildPhase: resources
+      - path: Resources/hand_landmarker.task
+        buildPhase: resources
+    info:
+      path: Config/Info.plist
+      properties:
+        CFBundleDisplayName: Metulas
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        NSCameraUsageDescription: "A câmera é usada para rastrear suas mãos."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.metulas.desert
+        PRODUCT_NAME: Metulas
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
