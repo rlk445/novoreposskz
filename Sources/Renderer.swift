@@ -28,7 +28,7 @@ final class Renderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let model: AppModel
-    private let scene: LoadedScene
+    private var scene: LoadedScene
     private var textures: [MTLTexture?] = []
     private let fallback: MTLTexture
     private let psoScene: MTLRenderPipelineState
@@ -46,11 +46,28 @@ final class Renderer: NSObject, MTKViewDelegate {
 
     private var pinchWas: [String: Bool] = [:]
     private var pinchPrev: [String: SIMD2<Float>] = [:]
+    private var pressKind: [String: PressKind] = [:]
+    private var pointerPrev: [String: CGPoint] = [:]
+
+    private(set) var currentEnv = "desert"
+    private var switching = false
+
+    static var lastError = ""
+    var summary: String {
+        let ok = textures.filter { $0 != nil }.count
+        return "cena ok: \(scene.draws.count) draws, \(ok)/\(textures.count) texturas"
+    }
 
     init?(view: MTKView, model: AppModel) {
         guard let dev = view.device ?? MTLCreateSystemDefaultDevice(),
-              let q = dev.makeCommandQueue(),
-              let library = dev.makeDefaultLibrary() else { return nil }
+              let q = dev.makeCommandQueue() else {
+            Renderer.lastError = "sem GPU Metal"
+            return nil
+        }
+        guard let library = dev.makeDefaultLibrary() else {
+            Renderer.lastError = "shaders nao encontrados"
+            return nil
+        }
         view.device = dev
         view.colorPixelFormat = .bgra8Unorm
         view.depthStencilPixelFormat = .depth32Float
@@ -58,7 +75,19 @@ final class Renderer: NSObject, MTKViewDelegate {
         view.clearColor = MTLClearColor(red: 0.62, green: 0.74, blue: 0.9, alpha: 1)
         view.preferredFramesPerSecond = 60
 
-        guard let loaded = try? SceneLoader.load(device: dev, name: "desert") else { return nil }
+        // ambiente salvo no menu; se não estiver incluído no app, usa o primeiro disponível
+        var envId = model.menu.homeEnv
+        if !MenuModel.isAvailable(envId) {
+            envId = MenuModel.environments.first(where: { MenuModel.isAvailable($0.id) })?.id ?? "desert"
+        }
+
+        let loaded: LoadedScene
+        do {
+            loaded = try SceneLoader.load(device: dev, name: envId)
+        } catch {
+            Renderer.lastError = "scene.bin: \(error)"
+            return nil
+        }
 
         // vertex: pos float3 + uv float2 = 20 bytes
         let vd = MTLVertexDescriptor()
@@ -78,7 +107,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         sd.rasterSampleCount = view.sampleCount
         sd.colorAttachments[0].pixelFormat = view.colorPixelFormat
         sd.depthAttachmentPixelFormat = view.depthStencilPixelFormat
-        guard let sceneState = try? dev.makeRenderPipelineState(descriptor: sd) else { return nil }
+        let sceneState: MTLRenderPipelineState
+        do { sceneState = try dev.makeRenderPipelineState(descriptor: sd) } catch {
+            Renderer.lastError = "pipeline cena: \(error.localizedDescription)"
+            return nil
+        }
 
         let hd = MTLRenderPipelineDescriptor()
         hd.vertexFunction = library.makeFunction(name: "hand_vertex")
@@ -94,7 +127,11 @@ final class Renderer: NSObject, MTKViewDelegate {
         ca.destinationRGBBlendFactor = .oneMinusSourceAlpha
         ca.sourceAlphaBlendFactor = .one
         ca.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        guard let handState = try? dev.makeRenderPipelineState(descriptor: hd) else { return nil }
+        let handState: MTLRenderPipelineState
+        do { handState = try dev.makeRenderPipelineState(descriptor: hd) } catch {
+            Renderer.lastError = "pipeline maos: \(error.localizedDescription)"
+            return nil
+        }
 
         let d1 = MTLDepthStencilDescriptor()
         d1.depthCompareFunction = .less
@@ -119,15 +156,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         var white: [UInt8] = [200, 200, 200, 255]
         fb.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &white, bytesPerRow: 4)
 
-        var texs: [MTLTexture?] = []
-        for name in loaded.textureNames {
-            let url = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "desert")
-            if let url = url {
-                texs.append(KTXLoader.load(url: url, device: dev))
-            } else {
-                texs.append(nil)
-            }
-        }
+        let texs = Renderer.loadTextures(loaded.textureNames, env: envId, device: dev)
 
         self.device = dev
         self.queue = q
@@ -141,6 +170,53 @@ final class Renderer: NSObject, MTKViewDelegate {
         self.dsOff = ds2
         self.sampler = samp
         super.init()
+        self.currentEnv = envId
+    }
+
+    private static func loadTextures(_ names: [String], env: String, device: MTLDevice) -> [MTLTexture?] {
+        var out: [MTLTexture?] = []
+        for name in names {
+            if let url = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: env) {
+                out.append(KTXLoader.load(url: url, device: device))
+            } else {
+                out.append(nil)
+            }
+        }
+        return out
+    }
+
+    /// Carrega outro ambiente em segundo plano e troca a cena quando estiver pronto.
+    func switchEnvironment(_ id: String, completion: @escaping (Bool, String) -> Void) {
+        if switching {
+            completion(false, "Aguarde o ambiente atual carregar")
+            return
+        }
+        guard MenuModel.isAvailable(id) else {
+            completion(false, "Esse ambiente não está incluído no app")
+            return
+        }
+        switching = true
+        let dev = device
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let loaded = try SceneLoader.load(device: dev, name: id)
+                let texs = Renderer.loadTextures(loaded.textureNames, env: id, device: dev)
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    self.scene = loaded
+                    self.textures = texs
+                    self.currentEnv = id
+                    self.switching = false
+                    self.model.renderInfo = self.summary
+                    completion(true, "")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.switching = false
+                    completion(false, "Falha ao carregar o ambiente")
+                }
+            }
+        }
     }
 
     // MARK: - interação
@@ -156,30 +232,75 @@ final class Renderer: NSObject, MTKViewDelegate {
         model.motion.recenter()
     }
 
-    private func updateInteraction(_ hands: [TrackedHand]) {
+    /// Converte um ponto normalizado da câmera (0...1) para pontos de tela,
+    /// com a mesma projeção usada para desenhar o esqueleto da mão.
+    private func screenPoint(_ n: SIMD2<Float>, size: CGSize) -> CGPoint {
+        let asp = Float(size.width / max(size.height, 1))
+        let x = (0.5 + (n.x - 0.5) * cameraAspect / asp) * Float(size.width)
+        let y = n.y * Float(size.height)
+        return CGPoint(x: CGFloat(x), y: CGFloat(y))
+    }
+
+    private func updateInteraction(_ hands: [TrackedHand], size: CGSize) {
+        let menu = model.menu
         var seen = Set<String>()
+        var dots: [PointerDot] = []
+        var hoverPoint: CGPoint?
+
         for h in hands {
             seen.insert(h.label)
             let was = pinchWas[h.label] ?? false
+            let pt = screenPoint(h.pinchPoint, size: size)
+            let prevPt = pointerPrev[h.label] ?? pt
+            dots.append(PointerDot(id: h.label, point: pt, pinching: h.pinching))
+            if !h.pinching && hoverPoint == nil { hoverPoint = pt }
+
             if h.pinching {
                 if !was {
-                    model.audio.play("sfx_grab")
-                } else if let prev = pinchPrev[h.label] {
-                    let dx = h.pinchPoint.x - prev.x
-                    let dy = h.pinchPoint.y - prev.y
-                    // arrastar a cena: mão para a direita gira a câmera para a esquerda
-                    addLook(yaw: dx * 3.2, pitch: dy * 2.4)
+                    // usa a posição do quadro anterior: ao fechar a pinça o ponto se desloca um pouco
+                    let kind = menu.pressBegan(at: prevPt)
+                    pressKind[h.label] = kind
+                    if case .scene = kind { model.audio.play("sfx_grab") }
+                } else if let kind = pressKind[h.label] {
+                    if case .scene = kind {
+                        if let prev = pinchPrev[h.label] {
+                            let dx = h.pinchPoint.x - prev.x
+                            let dy = h.pinchPoint.y - prev.y
+                            // arrastar a cena: mão para a direita gira a câmera para a esquerda
+                            addLook(yaw: dx * 3.2, pitch: dy * 2.4)
+                        }
+                    } else {
+                        let delta = CGPoint(x: pt.x - prevPt.x, y: pt.y - prevPt.y)
+                        pressKind[h.label] = menu.pressMoved(kind, to: pt, delta: delta)
+                    }
                 }
                 pinchPrev[h.label] = h.pinchPoint
             } else {
-                if was { model.audio.play("sfx_release_main") }
+                if was, let kind = pressKind[h.label] {
+                    if case .scene = kind {
+                        model.audio.play("sfx_release_main")
+                    } else {
+                        menu.pressEnded(kind)
+                    }
+                }
+                pressKind.removeValue(forKey: h.label)
                 pinchPrev.removeValue(forKey: h.label)
             }
             pinchWas[h.label] = h.pinching
+            pointerPrev[h.label] = pt
         }
+
         for k in pinchWas.keys where !seen.contains(k) {
+            if let kind = pressKind[k] { menu.pressEnded(kind) }
             pinchWas.removeValue(forKey: k)
             pinchPrev.removeValue(forKey: k)
+            pressKind.removeValue(forKey: k)
+            pointerPrev.removeValue(forKey: k)
+        }
+
+        menu.setHover(hoverPoint)
+        if !dots.isEmpty || !model.pointer.dots.isEmpty {
+            model.pointer.dots = dots
         }
     }
 
@@ -264,7 +385,7 @@ final class Renderer: NSObject, MTKViewDelegate {
         }
 
         let hands = model.tracker.currentHands()
-        updateInteraction(hands)
+        updateInteraction(hands, size: view.bounds.size)
 
         let camRot = rotationY(yawOffset) * model.motion.rotation() * rotationX(pitchOffset)
         let viewM = simd_float4x4(rotation: camRot.transpose) * simd_float4x4.translation(-eye)
@@ -316,6 +437,11 @@ final class Renderer: NSObject, MTKViewDelegate {
 
         enc.endEncoding()
         cb.present(drawable)
+        cb.addCompletedHandler { [weak self] c in
+            if let e = c.error {
+                DispatchQueue.main.async { self?.model.renderInfo = "GPU erro: \(e.localizedDescription)" }
+            }
+        }
         cb.commit()
     }
 }

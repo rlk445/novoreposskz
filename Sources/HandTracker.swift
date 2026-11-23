@@ -25,6 +25,8 @@ final class HandTracker: NSObject, ObservableObject {
     private var smoothed: [String: [SIMD3<Float>]] = [:]
     private var pinchState: [String: Bool] = [:]
     private var configured = false
+    /// Ligado/desligado pelo menu (Mãos e Controles).
+    var handsEnabled = true
 
     func start() {
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
@@ -40,6 +42,7 @@ final class HandTracker: NSObject, ObservableObject {
     func currentHands() -> [TrackedHand] {
         lock.lock()
         defer { lock.unlock() }
+        if !handsEnabled { return [] }
         if CACurrentMediaTime() - latestTime > 0.4 { return [] }
         return latest
     }

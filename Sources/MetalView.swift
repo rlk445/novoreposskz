@@ -24,6 +24,13 @@ struct MetalView: UIViewRepresentable {
             context.coordinator.renderer = r
             model.renderer = r
             view.delegate = r
+            DispatchQueue.main.async {
+                model.renderInfo = r.summary
+                model.menu.homeEnv = r.currentEnv
+                model.audio.setEnvironment(r.currentEnv)
+            }
+        } else {
+            DispatchQueue.main.async { model.renderInfo = "ERRO renderer: " + Renderer.lastError }
         }
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pan(_:)))
         view.addGestureRecognizer(pan)
